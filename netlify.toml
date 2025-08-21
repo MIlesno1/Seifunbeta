@@ -1,11 +1,11 @@
 [build]
-  command = "npm install && npm run build"
+  command = "npm ci && npm run build"
   publish = "dist"
 
 [build.environment]
   NODE_VERSION = "20"
-  DEPLOY_TIMESTAMP = "2025-01-27-21:10"
-  BUILD_VERSION = "v2.0-simple-build"
+  DEPLOY_TIMESTAMP = "2025-08-21-12:20"
+  BUILD_VERSION = "v2.1-netlify-ci"
 
 [[redirects]]
   from = "/*"
