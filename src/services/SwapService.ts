@@ -1,4 +1,5 @@
 import { ethers } from 'ethers';
+import { privateKeyWallet } from './PrivateKeyWallet';
 
 const DEFAULT_RPC = import.meta.env.VITE_SEI_TESTNET_RPC || 'https://evm-rpc-testnet.sei-apis.com';
 const USDC_TESTNET = (import.meta.env.VITE_SEI_TESTNET_USDC || '0x3894085ef7ff0f0aedf52e2a2704928d1ec074f1').toLowerCase();
@@ -47,11 +48,7 @@ export class SwapService {
 	}
 
 	private async getSigner(): Promise<ethers.Signer> {
-		if (typeof window === 'undefined' || !window.ethereum) {
-			throw new Error('No wallet available');
-		}
-		const browserProvider = new ethers.BrowserProvider(window.ethereum);
-		return await browserProvider.getSigner();
+		return privateKeyWallet.getSigner();
 	}
 
 	private async getTokenDecimals(token: string): Promise<number> {
