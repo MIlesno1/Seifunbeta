@@ -1,8 +1,13 @@
 import { ethers } from 'ethers';
 
 const DEFAULT_RPC = import.meta.env.VITE_SEI_TESTNET_RPC || 'https://evm-rpc-testnet.sei-apis.com';
-const USDC_ADDRESS = (import.meta.env.VITE_SEI_TESTNET_USDC || '0x3894085ef7ff0f0aedf52e2a2704928d1ec074f1').toLowerCase();
-const ROUTER_ADDRESS = (import.meta.env.VITE_SEI_TESTNET_ROUTER || '').toLowerCase();
+const USDC_TESTNET = (import.meta.env.VITE_SEI_TESTNET_USDC || '0x3894085ef7ff0f0aedf52e2a2704928d1ec074f1').toLowerCase();
+const ROUTER_TESTNET = (import.meta.env.VITE_SEI_TESTNET_ROUTER || '').toLowerCase();
+const WSEI_TESTNET = (import.meta.env.VITE_SEI_TESTNET_WSEI || '').toLowerCase();
+
+const USDC_MAINNET = (import.meta.env.VITE_SEI_MAINNET_USDC || '').toLowerCase();
+const ROUTER_MAINNET = (import.meta.env.VITE_SEI_MAINNET_ROUTER || '').toLowerCase();
+const WSEI_MAINNET = (import.meta.env.VITE_SEI_MAINNET_WSEI || '').toLowerCase();
 
 const ROUTER_ABI = [
 	'function getAmountsOut(uint amountIn, address[] memory path) view returns (uint[] memory amounts)',
@@ -16,6 +21,8 @@ const ERC20_ABI = [
 	'function allowance(address owner, address spender) view returns (uint256)'
 ];
 
+type Chain = 'testnet' | 'mainnet';
+
 export class SwapService {
 	private provider: ethers.JsonRpcProvider;
 
@@ -23,12 +30,20 @@ export class SwapService {
 		this.provider = new ethers.JsonRpcProvider(DEFAULT_RPC);
 	}
 
-	getUsdcAddress(): string {
-		return USDC_ADDRESS;
+	getUsdcAddress(chain: Chain = 'testnet'): string {
+		return (chain === 'mainnet' ? USDC_MAINNET : USDC_TESTNET) || USDC_TESTNET;
 	}
 
-	isRouterConfigured(): boolean {
-		return ROUTER_ADDRESS.length === 42;
+	private getRouter(chain: Chain = 'testnet'): { addr: string; wsei: string } {
+		if (chain === 'mainnet') {
+			return { addr: ROUTER_MAINNET, wsei: WSEI_MAINNET };
+		}
+		return { addr: ROUTER_TESTNET, wsei: WSEI_TESTNET };
+	}
+
+	isRouterConfigured(chain: Chain = 'testnet'): boolean {
+		const { addr, wsei } = this.getRouter(chain);
+		return addr.length === 42 && wsei.length === 42;
 	}
 
 	private async getSigner(): Promise<ethers.Signer> {
@@ -45,15 +60,16 @@ export class SwapService {
 		return Number(await erc20.decimals());
 	}
 
-	async quote(amountInStr: string, path: string[]): Promise<{ amounts: string[]; simulated: boolean }>{
-		if (!this.isRouterConfigured()) {
+	async quote(amountInStr: string, path: string[], chain: Chain = 'testnet'): Promise<{ amounts: string[]; simulated: boolean }>{
+		if (!this.isRouterConfigured(chain)) {
 			// Fallback: simulate 2% price impact
 			const amounts = [amountInStr];
 			const out = (parseFloat(amountInStr) * 0.98).toFixed(6);
 			amounts.push(out);
 			return { amounts, simulated: true };
 		}
-		const router = new ethers.Contract(ROUTER_ADDRESS, ROUTER_ABI, this.provider);
+		const { addr } = this.getRouter(chain);
+		const router = new ethers.Contract(addr, ROUTER_ABI, this.provider);
 		const [inDecimals, outDecimals] = await Promise.all([
 			this.getTokenDecimals(path[0]),
 			this.getTokenDecimals(path[path.length - 1])
@@ -69,17 +85,16 @@ export class SwapService {
 		};
 	}
 
-	async swapSeiToToken(toToken: string, amountSei: string, slippageBps = 500): Promise<{ txHash: string; simulated: boolean }>{
-		if (!this.isRouterConfigured()) {
-			// Simulate
+	async swapSeiToToken(toToken: string, amountSei: string, slippageBps = 500, chain: Chain = 'testnet'): Promise<{ txHash: string; simulated: boolean }>{
+		if (!this.isRouterConfigured(chain)) {
 			const txHash = '0x' + Math.random().toString(16).slice(2).padEnd(64, '0');
 			return { txHash, simulated: true };
 		}
 		const signer = await this.getSigner();
-		const router = new ethers.Contract(ROUTER_ADDRESS, ROUTER_ABI, signer);
-		const path = [ethers.ZeroAddress, toToken];
-		// Quote
-		const quote = await this.quote(amountSei, path);
+		const { addr, wsei } = this.getRouter(chain);
+		const router = new ethers.Contract(addr, ROUTER_ABI, signer);
+		const path = [wsei, toToken];
+		const quote = await this.quote(amountSei, path, chain);
 		const outMin = (parseFloat(quote.amounts[1]) * (1 - slippageBps / 10000)).toString();
 		const outDecimals = await this.getTokenDecimals(toToken);
 		const deadline = Math.floor(Date.now() / 1000) + 60 * 10;
@@ -94,26 +109,26 @@ export class SwapService {
 		return { txHash: tx.hash, simulated: false };
 	}
 
-	async swapTokenToToken(tokenIn: string, tokenOut: string, amountInStr: string, slippageBps = 500): Promise<{ txHash: string; simulated: boolean }>{
-		if (!this.isRouterConfigured()) {
+	async swapTokenToToken(tokenIn: string, tokenOut: string, amountInStr: string, slippageBps = 500, chain: Chain = 'testnet'): Promise<{ txHash: string; simulated: boolean }>{
+		if (!this.isRouterConfigured(chain)) {
 			const txHash = '0x' + Math.random().toString(16).slice(2).padEnd(64, '0');
 			return { txHash, simulated: true };
 		}
 		const signer = await this.getSigner();
-		const router = new ethers.Contract(ROUTER_ADDRESS, ROUTER_ABI, signer);
+		const { addr } = this.getRouter(chain);
+		const router = new ethers.Contract(addr, ROUTER_ABI, signer);
 		const inDecimals = await this.getTokenDecimals(tokenIn);
 		const outDecimals = await this.getTokenDecimals(tokenOut);
 		const amountIn = ethers.parseUnits(amountInStr, inDecimals);
 		const owner = await signer.getAddress();
-		// Approve if needed
 		const erc20 = new ethers.Contract(tokenIn, ERC20_ABI, signer);
-		const currentAllowance: bigint = await erc20.allowance(owner, ROUTER_ADDRESS);
+		const currentAllowance: bigint = await erc20.allowance(owner, addr);
 		if (currentAllowance < amountIn) {
-			const approveTx = await erc20.approve(ROUTER_ADDRESS, amountIn);
+			const approveTx = await erc20.approve(addr, amountIn);
 			await approveTx.wait();
 		}
 		const path = [tokenIn, tokenOut];
-		const quote = await this.quote(amountInStr, path);
+		const quote = await this.quote(amountInStr, path, chain);
 		const outMin = (parseFloat(quote.amounts[1]) * (1 - slippageBps / 10000)).toString();
 		const deadline = Math.floor(Date.now() / 1000) + 60 * 10;
 		const tx = await router.swapExactTokensForTokens(
