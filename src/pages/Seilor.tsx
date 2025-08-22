@@ -18,6 +18,8 @@ import { chatBrain } from '../services/ChatBrain';
 import { actionBrain, IntentType } from '../services/ActionBrain';
 import { privateKeyWallet } from '../services/PrivateKeyWallet';
 import { AIInterface } from '../components/AIInterface';
+import { swapService } from '../services/SwapService';
+import { portfolioService } from '../services/PortfolioService';
 
 const Seilor = () => {
   const [activePanel, setActivePanel] = useState<'chat' | 'history' | 'transactions' | 'todo' | 'ai-tools'>('chat');
@@ -47,6 +49,7 @@ const Seilor = () => {
     timestamp: Date;
   }>>([]);
   const [walletBalance, setWalletBalance] = useState<{ sei: string; usd: number; usdc: string; usdcUsd: number } | null>(null);
+  const [portfolioUsd, setPortfolioUsd] = useState<number | null>(null);
 
   const { isConnected, address } = useReownWallet();
 
@@ -89,6 +92,10 @@ const Seilor = () => {
         usdc: usdcBalance.balance,
         usdcUsd: usdcBalance.usd
       });
+      if (address) {
+        const pf = await portfolioService.getPortfolio(address, []);
+        setPortfolioUsd(pf.totalUsd);
+      }
     } catch (error) {
       console.error('Failed to load wallet balance:', error);
     }
@@ -572,7 +579,33 @@ const Seilor = () => {
                 <div className="p-6">
                   <h2 className="text-xl font-bold text-white mb-4">AI Tools</h2>
                   <p className="text-slate-400 mb-6">Scan tokens, create new tokens, and manage swaps directly from the AI interface.</p>
-                  <AIInterface />
+                  <AIInterface
+                    onSwapRequest={async (fromToken, toToken, amount) => {
+                      try {
+                        if (!isConnected) {
+                          alert('Please connect your wallet first');
+                          return;
+                        }
+                        // Normalize simple symbols
+                        const lowerFrom = fromToken.trim().toLowerCase();
+                        const lowerTo = toToken.trim().toLowerCase();
+                        const seiLike = (t: string) => t === 'sei' || t === 'native' || t === ethers?.ZeroAddress;
+                        const usdc = swapService.getUsdcAddress();
+                        let result;
+                        if (seiLike(lowerFrom)) {
+                          const dest = lowerTo === 'usdc' ? usdc : toToken;
+                          result = await swapService.swapSeiToToken(dest, amount, 500);
+                        } else {
+                          const src = lowerFrom === 'usdc' ? usdc : fromToken;
+                          const dest = lowerTo === 'usdc' ? usdc : toToken;
+                          result = await swapService.swapTokenToToken(src, dest, amount, 500);
+                        }
+                        alert(`Swap ${result.simulated ? '(simulated) ' : ''}submitted! Tx: ${result.txHash}`);
+                      } catch (e: any) {
+                        alert(`Swap failed: ${e?.message || e}`);
+                      }
+                    }}
+                  />
                 </div>
               )}
 
