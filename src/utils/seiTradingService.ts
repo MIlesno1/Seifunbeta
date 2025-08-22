@@ -10,7 +10,7 @@ export interface TradeParams {
 
 export interface TransactionHistory {
   hash: string;
-  type: 'swap' | 'add_liquidity' | 'remove_liquidity' | 'stake' | 'unstake';
+  type: 'swap' | 'add_liquidity' | 'remove_liquidity' | 'stake' | 'unstake' | 'send' | 'send_token';
   status: 'pending' | 'confirmed' | 'failed';
   timestamp: Date;
   amount: string;
@@ -129,6 +129,51 @@ export class SeiTradingService {
       return simulatedTx.hash;
     } catch (error) {
       console.error('Swap execution failed:', error);
+      throw error;
+    }
+  }
+
+  // Send native SEI
+  async sendSei(toAddress: string, amount: string): Promise<string> {
+    if (!this.signer) throw new Error('Wallet not connected');
+    try {
+      const tx = await (this.signer as any).sendTransaction({ to: toAddress, value: ethers.parseEther(amount) });
+      this.addTransaction({
+        hash: tx.hash,
+        type: 'send',
+        status: 'pending',
+        timestamp: new Date(),
+        amount,
+        tokenSymbol: 'SEI'
+      });
+      (async () => { try { await tx.wait(); this.updateTransactionStatus(tx.hash, 'confirmed'); } catch { this.updateTransactionStatus(tx.hash, 'failed'); } })();
+      return tx.hash;
+    } catch (error) {
+      console.error('SEI send failed:', error);
+      throw error;
+    }
+  }
+
+  // Send ERC20 token
+  async sendToken(tokenAddress: string, toAddress: string, amount: string): Promise<string> {
+    if (!this.signer) throw new Error('Wallet not connected');
+    try {
+      const token = new ethers.Contract(tokenAddress, ['function transfer(address to, uint256 amount) returns (bool)', 'function decimals() view returns (uint8)', 'function symbol() view returns (string)'], this.signer);
+      const decimals = await token.decimals();
+      const symbol = await token.symbol();
+      const tx = await token.transfer(toAddress, ethers.parseUnits(amount, decimals));
+      this.addTransaction({
+        hash: tx.hash,
+        type: 'send_token',
+        status: 'pending',
+        timestamp: new Date(),
+        amount,
+        tokenSymbol: symbol
+      });
+      (async () => { try { await tx.wait(); this.updateTransactionStatus(tx.hash, 'confirmed'); } catch { this.updateTransactionStatus(tx.hash, 'failed'); } })();
+      return tx.hash;
+    } catch (error) {
+      console.error('Token send failed:', error);
       throw error;
     }
   }

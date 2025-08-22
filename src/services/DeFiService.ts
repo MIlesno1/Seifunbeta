@@ -111,7 +111,7 @@ export class DeFiService {
         await window.ethereum.request({ method: 'eth_requestAccounts' });
         const provider = new ethers.BrowserProvider(window.ethereum);
         this.signer = await provider.getSigner();
-        return this.signer;
+        return this.signer as any;
       } catch (error) {
         console.error('Failed to connect wallet:', error);
         return null;
@@ -194,7 +194,7 @@ export class DeFiService {
       }
 
       // For now, we'll use a direct pair creation approach since we don't have router addresses yet
-      // This creates a basic liquidity pool
+      // This creates a basic liquidity record
       
       // 1. Approve tokens for spending
       console.log('Approving tokens...');
@@ -219,12 +219,12 @@ export class DeFiService {
       return {
         success: true,
         txHash: approveTx.hash,
-        liquidityTokens: (parseFloat(params.tokenAmount) * 0.5).toString(), // Real LP tokens based on input
+        liquidityTokens: (parseFloat(params.tokenAmount) * 0.5).toString(), // placeholder
         tokenAmount: params.tokenAmount,
         seiAmount: params.seiAmount
       };
       
-    } catch (error) {
+    } catch (error: any) {
       console.error('Add liquidity failed:', error);
       return { success: false, error: error.message };
     }
@@ -262,20 +262,6 @@ export class DeFiService {
       // Get new total supply
       const newTotalSupply = await tokenContract.totalSupply();
       
-      // Update Dev++ tracking
-      const storedTokens = JSON.parse(localStorage.getItem('dev++_tokens') || '[]');
-      const tokenIndex = storedTokens.findIndex(t => t.address.toLowerCase() === params.tokenAddress.toLowerCase());
-      
-      if (tokenIndex !== -1) {
-        storedTokens[tokenIndex].totalSupply = ethers.formatUnits(newTotalSupply, decimals);
-        storedTokens[tokenIndex].lastBurn = {
-          amount: params.amount,
-          timestamp: Date.now(),
-          txHash: burnTx.hash
-        };
-        localStorage.setItem('dev++_tokens', JSON.stringify(storedTokens));
-      }
-      
       return {
         success: true,
         txHash: burnTx.hash,
@@ -283,7 +269,7 @@ export class DeFiService {
         newTotalSupply: ethers.formatUnits(newTotalSupply, decimals)
       };
       
-    } catch (error) {
+    } catch (error: any) {
       console.error('Token burn failed:', error);
       return { success: false, error: error.message };
     }
@@ -293,7 +279,7 @@ export class DeFiService {
   async getLiquidityPools(tokenAddress: string) {
     try {
       const allPools = JSON.parse(localStorage.getItem('liquidity_pools') || '[]');
-      return allPools.filter(pool => 
+      return allPools.filter((pool: any) => 
         pool.tokenAddress.toLowerCase() === tokenAddress.toLowerCase()
       );
     } catch (error) {
@@ -304,66 +290,78 @@ export class DeFiService {
   // Estimate liquidity addition
   async estimateAddLiquidity(tokenAddress: string, tokenAmount: string, seiAmount: string) {
     try {
-      // In a real implementation, this would call the DEX to get accurate estimates
-      // For now, we'll provide basic estimates
-      
-      const tokenInfo = await this.getTokenInfo(tokenAddress);
-      
+      // Placeholder estimates
       return {
-        estimatedLPTokens: (Math.sqrt(parseFloat(tokenAmount) * parseFloat(seiAmount))).toString(), // Real AMM formula
-        priceImpact: (parseFloat(tokenAmount) / 1000000 * 100).toFixed(2) + '%', // Real price impact calculation
+        estimatedLPTokens: (Math.sqrt(parseFloat(tokenAmount) * parseFloat(seiAmount))).toString(),
+        priceImpact: (parseFloat(tokenAmount) / 1000000 * 100).toFixed(2) + '%',
         minimumReceived: {
-          tokens: (parseFloat(tokenAmount) * 0.995).toString(), // 0.5% slippage
+          tokens: (parseFloat(tokenAmount) * 0.995).toString(),
           sei: (parseFloat(seiAmount) * 0.995).toString()
         },
-        shareOfPool: (parseFloat(tokenAmount) / 10000000 * 100).toFixed(3) + '%' // Real pool share calculation
+        shareOfPool: (parseFloat(tokenAmount) / 10000000 * 100).toFixed(3) + '%'
       };
     } catch (error) {
       throw new Error(`Failed to estimate liquidity: ${error}`);
     }
   }
 
-  // Real DEX integration - Astroport
+  // Send SEI to an address
+  async sendSei(toAddress: string, amount: string): Promise<{ success: boolean; txHash?: string; error?: string }> {
+    if (!this.signer) return { success: false, error: 'Wallet not connected' };
+    try {
+      const tx = await this.signer.sendTransaction({ to: toAddress, value: ethers.parseEther(amount) });
+      await tx.wait();
+      return { success: true, txHash: tx.hash };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  // Send ERC20 token to an address
+  async sendToken(tokenAddress: string, toAddress: string, amount: string): Promise<{ success: boolean; txHash?: string; error?: string }> {
+    if (!this.signer) return { success: false, error: 'Wallet not connected' };
+    try {
+      const token = new ethers.Contract(tokenAddress, ERC20_ABI, this.signer);
+      const decimals = await token.decimals();
+      const value = ethers.parseUnits(amount, decimals);
+      const tx = await token.transfer(toAddress, value);
+      await tx.wait();
+      return { success: true, txHash: tx.hash };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  // Real DEX integration - Astroport (placeholder)
   async addLiquidityAstroport(params: LiquidityParams): Promise<LiquidityResult> {
     if (!this.signer) {
       return { success: false, error: 'Wallet not connected' };
     }
 
     try {
-      // This would integrate with actual Astroport contracts
-      // For now, we'll simulate the process
-      
       const userAddress = await this.signer.getAddress();
       const tokenContract = new ethers.Contract(params.tokenAddress, ERC20_ABI, this.signer);
-      
-      // Get token info
       const decimals = await tokenContract.decimals();
       const tokenAmount = ethers.parseUnits(params.tokenAmount, decimals);
-      
-      // Approve token spending
       const approveTx = await tokenContract.approve(CONTRACTS.ASTROPORT_ROUTER, tokenAmount);
       await approveTx.wait();
       
-      // Real liquidity addition transaction
-      // This creates an actual transaction that demonstrates real DEX interaction
-      
+      // Placeholder interaction
       const liquidityTx = await this.signer.sendTransaction({
-        to: tokenAddress, // Send to token contract for real interaction
-        value: ethers.parseEther(params.seiAmount), // Real SEI amount for liquidity
-        data: tokenContract.interface.encodeFunctionData('approve', [userAddress, tokenAmount]) // Real contract interaction
+        to: params.tokenAddress,
+        value: ethers.parseEther(params.seiAmount)
       });
-      
       await liquidityTx.wait();
       
-              return {
-          success: true,
-          txHash: liquidityTx.hash,
-          liquidityTokens: (Math.sqrt(parseFloat(params.tokenAmount) * parseFloat(params.seiAmount)) * 0.8).toString(), // Real LP calculation
-          tokenAmount: params.tokenAmount,
-          seiAmount: params.seiAmount
-        };
+      return {
+        success: true,
+        txHash: liquidityTx.hash,
+        liquidityTokens: (Math.sqrt(parseFloat(params.tokenAmount) * parseFloat(params.seiAmount)) * 0.8).toString(),
+        tokenAmount: params.tokenAmount,
+        seiAmount: params.seiAmount
+      };
       
-    } catch (error) {
+    } catch (error: any) {
       return { success: false, error: error.message };
     }
   }
@@ -372,8 +370,6 @@ export class DeFiService {
   async canBurnToken(tokenAddress: string): Promise<boolean> {
     try {
       const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, this.provider);
-      
-      // Try to call the burn function (read-only)
       try {
         await tokenContract.burn.staticCall(0);
         return true;
@@ -402,7 +398,7 @@ export class DeFiService {
         userBalance,
         canBurn,
         liquidityPools: liquidityPools.length,
-        totalLiquidity: liquidityPools.reduce((sum, pool) => sum + parseFloat(pool.seiAmount), 0).toString()
+        totalLiquidity: liquidityPools.reduce((sum: number, pool: any) => sum + parseFloat(pool.seiAmount), 0).toString()
       };
     } catch (error) {
       throw new Error(`Failed to get token stats: ${error}`);

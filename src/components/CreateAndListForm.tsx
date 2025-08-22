@@ -21,6 +21,7 @@ import { TokenSpotlight } from './TokenSpotlight';
 // import { useTokenImage } from '../utils/tokenImageGenerator';
 // import { useLogoUpload } from '../utils/ipfsUpload';
 // import { useTokenMetadata } from '../utils/tokenMetadata';
+import { useTokenMetadata } from '../utils/tokenMetadata';
 
 interface TokenFormData {
   name: string;
@@ -46,6 +47,7 @@ interface TokenFormData {
   // Basic liquidity features (no locking - not available on Sei)
   initialLiquidityETH: string;
   addLiquidity: boolean;
+  decimals?: number;
 }
 
 interface CreateAndListFormProps {
@@ -62,6 +64,9 @@ const CreateAndListForm: React.FC<CreateAndListFormProps> = ({ onBack }) => {
   // Use ReOWN wallet for production
   const reownWallet = useReownWallet();
   
+  // Metadata helpers
+  const { createAndUploadMetadata, storeMetadataReference } = useTokenMetadata();
+
   // Use ReOWN wallet for consistent connection across app, fallback to private key for dev
   const isConnected = reownWallet.isConnected || privateKeyWallet.isConnected;
   const address = reownWallet.address || privateKeyWallet.address;
@@ -218,7 +223,8 @@ const CreateAndListForm: React.FC<CreateAndListFormProps> = ({ onBack }) => {
     teamWallets: '',
     // Basic liquidity features (no locking - not available on Sei)
     initialLiquidityETH: '1',
-    addLiquidity: false
+    addLiquidity: false,
+    decimals: 18
   });
 
   // URL parameter support for AI-created tokens
@@ -317,9 +323,9 @@ const CreateAndListForm: React.FC<CreateAndListFormProps> = ({ onBack }) => {
             // Create factory contract instance with fallback
             const FACTORY_ADDRESS = import.meta.env.VITE_FACTORY_ADDRESS_TESTNET || '0x46287770F8329D51004560dC3BDED879A6565B9A';
             const FACTORY_ABI = [
-              'function createToken(string name, string symbol, uint8 decimals, uint256 totalSupply) external payable returns (address)',
+              'function createToken(string name, string symbol, uint256 totalSupply, uint8 decimals, string tokenURI) external payable returns (address)',
               'function creationFee() external view returns (uint256)',
-              'event TokenCreated(address indexed tokenAddress, address indexed creator, string name, string symbol)'
+              'event TokenCreated(address indexed tokenAddress, string name, string symbol, uint256 totalSupply, address indexed creator, string tokenURI)'
             ];
             
             const factory = new ethers.Contract(FACTORY_ADDRESS, FACTORY_ABI, signer);
@@ -331,12 +337,17 @@ const CreateAndListForm: React.FC<CreateAndListFormProps> = ({ onBack }) => {
             // Create the token with real transaction
             setVerificationStatus('pending');
             console.log('📝 Sending transaction to blockchain...');
-            
+            const decimals = Number(formData.decimals ?? 18);
+            const totalSupplyWei = ethers.parseUnits(formData.totalSupply, decimals);
+            // Prepare metadata first to pass tokenURI
+            const tempTokenAddress = '0x0000000000000000000000000000000000000000';
+            const metadataUrl = await createAndUploadMetadata({ ...formData, decimals }, tempTokenAddress, address);
             const tx = await factory.createToken(
               formData.name,
               formData.symbol,
-              18, // Default to 18 decimals
-              formData.totalSupply,
+              totalSupplyWei,
+              decimals,
+              metadataUrl,
               { value: fee }
             );
             
@@ -360,9 +371,8 @@ const CreateAndListForm: React.FC<CreateAndListFormProps> = ({ onBack }) => {
             let tokenAddress;
             if (tokenCreatedEvent) {
               const decoded = factory.interface.parseLog(tokenCreatedEvent);
-              tokenAddress = decoded.args[0]; // First argument is token address
+              tokenAddress = decoded.args[0];
             } else {
-              // Fallback: use the contract address from the first log
               tokenAddress = receipt.logs[0]?.address || receipt.contractAddress;
             }
             
@@ -373,8 +383,8 @@ const CreateAndListForm: React.FC<CreateAndListFormProps> = ({ onBack }) => {
             // Upload metadata to IPFS and store reference
             console.log('📤 Uploading token metadata to IPFS...');
             try {
-              const metadataUrl = await createAndUploadMetadata(formData, tokenAddress, address);
-              await storeMetadataReference(tokenAddress, metadataUrl, signer);
+              const finalMetadataUrl = await createAndUploadMetadata({ ...formData, decimals }, tokenAddress, address);
+              await storeMetadataReference(tokenAddress, finalMetadataUrl, signer);
               console.log('✅ Token metadata stored on IPFS:', metadataUrl);
             } catch (metadataError) {
               console.warn('⚠️ Metadata upload failed (token still created):', metadataError);
@@ -391,7 +401,7 @@ const CreateAndListForm: React.FC<CreateAndListFormProps> = ({ onBack }) => {
               symbol: formData.symbol,
               address: tokenAddress,
               totalSupply: formData.totalSupply,
-              decimals: formData.decimals,
+              decimals,
               description: formData.description,
               website: formData.website,
               twitter: formData.twitter,
@@ -454,9 +464,9 @@ const CreateAndListForm: React.FC<CreateAndListFormProps> = ({ onBack }) => {
       }
       
       const FACTORY_ABI = [
-        'function createToken(string name, string symbol, uint8 decimals, uint256 totalSupply) external payable returns (address)',
+        'function createToken(string name, string symbol, uint256 totalSupply, uint8 decimals, string tokenURI) external payable returns (address)',
         'function creationFee() external view returns (uint256)',
-        'event TokenCreated(address indexed tokenAddress, address indexed creator, string name, string symbol)'
+        'event TokenCreated(address indexed tokenAddress, string name, string symbol, uint256 totalSupply, address indexed creator, string tokenURI)'
       ];
       
       console.log('Using factory address:', FACTORY_ADDRESS);
@@ -465,12 +475,18 @@ const CreateAndListForm: React.FC<CreateAndListFormProps> = ({ onBack }) => {
       // Get creation fee
       const fee = await factory.creationFee();
       
+      // Prepare metadata and arguments
+      const decimals = Number(formData.decimals ?? 18);
+      const totalSupplyWei = ethers.parseUnits(formData.totalSupply, decimals);
+      const metadataUrl = await createAndUploadMetadata({ ...formData, decimals }, '0x0000000000000000000000000000000000000000', address);
+
       // Create token
       const tx = await factory.createToken(
         formData.name,
         formData.symbol,
-        18, // Default to 18 decimals
-        formData.totalSupply,
+        totalSupplyWei,
+        decimals,
+        metadataUrl,
         { value: fee }
       );
 
@@ -478,7 +494,15 @@ const CreateAndListForm: React.FC<CreateAndListFormProps> = ({ onBack }) => {
       
       // Wait for transaction confirmation
       const receipt = await tx.wait();
-      const tokenAddress = receipt.logs[0].address; // Get token address from event
+      const tokenCreatedEvent = receipt.logs.find(log => {
+        try {
+          const decoded = factory.interface.parseLog(log);
+          return decoded.name === 'TokenCreated';
+        } catch {
+          return false;
+        }
+      });
+      const tokenAddress = tokenCreatedEvent ? factory.interface.parseLog(tokenCreatedEvent).args[0] : (receipt.logs[0]?.address || receipt.contractAddress);
       
       setCreatedTokenAddress(tokenAddress);
       setTransactionHash(tx.hash);
@@ -489,7 +513,7 @@ const CreateAndListForm: React.FC<CreateAndListFormProps> = ({ onBack }) => {
         symbol: formData.symbol,
         address: tokenAddress,
         totalSupply: formData.totalSupply,
-        decimals: 18,
+        decimals,
         description: formData.description,
         website: formData.website,
         twitter: formData.twitter,
@@ -503,7 +527,7 @@ const CreateAndListForm: React.FC<CreateAndListFormProps> = ({ onBack }) => {
         name: formData.name,
         symbol: formData.symbol,
         totalSupply: formData.totalSupply,
-        decimals: 18,
+        decimals: decimals,
         creator: address,
         createdAt: new Date(),
         verified: false,
