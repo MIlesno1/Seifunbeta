@@ -20,6 +20,10 @@ export class LangChainSeiAgent {
     console.log('🔑 LangChain Agent initialized with API key:', this.openAIApiKey ? 'Present' : 'Missing');
   }
   
+  public isEnabled(): boolean {
+    return !!this.openAIApiKey;
+  }
+
   private async initialize() {
     if (this.isInitialized) return;
     
@@ -70,7 +74,7 @@ export class LangChainSeiAgent {
       if (!this.openAIApiKey || !this.model) {
         console.log('❌ No OpenAI API key found');
         return {
-          message: "I need an OpenAI API key to be fully intelligent. For now, I can help with basic commands like checking balances or transferring tokens.",
+          message: "I'm running in Local NLP mode. I can still help with real wallet balances, swaps, scans, reminders, and questions about Seifun. Connect an OpenAI key to enable advanced natural conversation.",
           success: false,
           confidence: 0.3
         };

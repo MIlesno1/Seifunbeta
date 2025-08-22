@@ -20,6 +20,7 @@ import { privateKeyWallet } from '../services/PrivateKeyWallet';
 import { AIInterface } from '../components/AIInterface';
 import { swapService } from '../services/SwapService';
 import { portfolioService } from '../services/PortfolioService';
+import { langChainSeiAgent } from '../services/LangChainSeiAgent';
 
 const Seilor = () => {
   const [activePanel, setActivePanel] = useState<'chat' | 'history' | 'transactions' | 'todo' | 'ai-tools'>('chat');
@@ -295,6 +296,9 @@ const Seilor = () => {
             
             {/* Wallet Status */}
             <div className="flex items-center space-x-4">
+              <div className={`px-2 py-1 rounded-full text-[10px] font-medium ${langChainSeiAgent.isEnabled() ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'}`} title={langChainSeiAgent.isEnabled() ? 'OpenAI enabled' : 'Local NLP mode'}>
+                {langChainSeiAgent.isEnabled() ? 'OpenAI: ON' : 'OpenAI: OFF'}
+              </div>
               {walletBalance && (
                 <div className="text-right">
                   <div className="text-sm font-medium text-white">{walletBalance.sei} SEI | {walletBalance.usdc} USDC</div>
@@ -367,14 +371,7 @@ const Seilor = () => {
                     <Menu className="w-4 h-4" />
                     <span className="text-sm">Show Menu</span>
                   </button>
-                  {/* Debug Test Button */}
-                  <button
-                    onClick={testChatFunction}
-                    className="flex items-center space-x-2 px-3 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-lg transition-colors text-sm"
-                    title="Test Chat Function"
-                  >
-                    🧪 Test Chat
-                  </button>
+                  {/* removed debug test button for cleaner UI */}
                 </div>
               )}
               {/* Chat Panel */}
@@ -487,13 +484,7 @@ const Seilor = () => {
                           <Send className="w-5 h-5" />
                         </button>
                       </div>
-                      {/* Debug Test Button */}
-                      <button
-                        onClick={testChatFunction}
-                        className="w-full px-4 py-2 bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 rounded-lg transition-colors text-sm border border-yellow-500/30"
-                      >
-                        🧪 Test Chat Function (Debug)
-                      </button>
+                      {/* removed debug test button for cleaner UI */}
                     </div>
                   </div>
                 </div>
