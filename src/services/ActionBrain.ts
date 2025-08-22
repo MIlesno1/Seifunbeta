@@ -1,6 +1,8 @@
 import { privateKeyWallet } from './PrivateKeyWallet';
 import { webBlockchainService } from './WebBlockchainService';
 import { cambrianSeiAgent, SwapParams, StakeParams, LendingParams, TradingParams } from './CambrianSeiAgent';
+import { swapService } from './SwapService';
+import { portfolioService } from './PortfolioService';
 
 // Intent Types for NLP Processing
 export enum IntentType {
@@ -543,12 +545,30 @@ export class ActionBrain {
     try {
       const balance = await privateKeyWallet.getSeiBalance();
       const myTokens = privateKeyWallet.getMyTokens();
+      // Enhanced: include USDC and portfolio snapshot if possible
+      let usdcLine = '';
+      try {
+        const usdc = await privateKeyWallet.getUSDCBalance();
+        usdcLine = `• **USDC**: ${usdc.balance} ($${usdc.usd.toFixed(2)})\n`;
+      } catch {}
+      let portfolioLine = '';
+      try {
+        const addr = privateKeyWallet.getAddress();
+        const pf = await portfolioService.getPortfolio(addr, []);
+        portfolioLine = `• **Portfolio Total (SEI+tracked)**: $${pf.totalUsd.toFixed(2)}\n`;
+      } catch {}
       
       let response = `💰 **Wallet Balance Report**\n\n`;
       response += `**🏦 SEI Balance:**\n`;
       response += `• **Amount**: ${balance.sei} SEI\n`;
       response += `• **USD Value**: $${balance.usd.toFixed(2)}\n`;
       response += `• **Address**: \`${privateKeyWallet.getAddress()}\`\n\n`;
+      if (usdcLine) {
+        response += `**💵 Stablecoins:**\n${usdcLine}\n`;
+      }
+      if (portfolioLine) {
+        response += `**📊 Portfolio:**\n${portfolioLine}\n`;
+      }
       
       if (myTokens.length > 0) {
         response += `**🏆 Your Created Tokens:**\n`;
@@ -714,14 +734,18 @@ export class ActionBrain {
   private extractSwapEntities(message: string): Partial<ExtractedEntities> {
     const entities: Partial<ExtractedEntities> = {};
     
-    // Extract token pairs for swapping
-    if (message.includes('sei') && message.includes('usdc')) {
-      if (message.includes('sei for usdc') || message.includes('sei to usdc')) {
-        entities.tokenIn = '0x0'; // Native SEI
-        entities.tokenOut = '0xB75D0B03c06A926e488e2659DF1A861F860bD3d1'; // USDC on Sei (example)
-      } else if (message.includes('usdc for sei') || message.includes('usdc to sei')) {
-        entities.tokenIn = '0xB75D0B03c06A926e488e2659DF1A861F860bD3d1'; // USDC
-        entities.tokenOut = '0x0'; // Native SEI
+    // Normalize
+    const m = message.toLowerCase();
+    const usdc = swapService.getUsdcAddress();
+
+    // Extract token pairs for swapping (SEI/native <-> USDC common case)
+    if (m.includes('sei') && m.includes('usdc')) {
+      if (m.includes('sei for usdc') || m.includes('sei to usdc')) {
+        entities.tokenIn = 'native';
+        entities.tokenOut = usdc;
+      } else if (m.includes('usdc for sei') || m.includes('usdc to sei')) {
+        entities.tokenIn = usdc;
+        entities.tokenOut = 'native';
       }
     }
     
@@ -838,21 +862,39 @@ export class ActionBrain {
           response: `❌ **Missing swap parameters**\n\nPlease specify: amount, input token, and output token.\n\n**Example**: "Swap 10 SEI for USDC"`
         };
       }
-      
-      const result = await cambrianSeiAgent.swapTokens({
-        tokenIn: tokenIn as any,
-        tokenOut: tokenOut as any,
-        amount: amount.toString()
-      });
-      
+
+      const amountStr = amount.toString();
+      const inToken = tokenIn.toLowerCase();
+      const outToken = tokenOut.toLowerCase();
+
+      // Build path for quote
+      const path = [inToken === 'native' ? 'native' : inToken, outToken === 'native' ? 'native' : outToken].map(t => t);
+      const quote = await swapService.quote(amountStr, path.map(t => t === 'native' ? '0x0000000000000000000000000000000000000000' : t));
+      const expectedOut = quote.amounts[1];
+
+      // Execute immediately (simple flow) and report
+      let result;
+      if (inToken === 'native') {
+        const actualOutToken = outToken === 'native' ? swapService.getUsdcAddress() : outToken;
+        result = await swapService.swapSeiToToken(actualOutToken, amountStr, 500);
+      } else {
+        const actualIn = inToken === 'native' ? swapService.getUsdcAddress() : inToken;
+        const actualOut = outToken === 'native' ? swapService.getUsdcAddress() : outToken;
+        result = await swapService.swapTokenToToken(actualIn, actualOut, amountStr, 500);
+      }
+
+      const mode = result.simulated ? '🧪 Simulated' : '✅ Submitted';
+      const response = `🔄 **Swap Executed**\n\n• **Amount In**: ${amountStr}\n• **Estimated Out**: ${expectedOut}\n• **Mode**: ${mode}\n• **Tx Hash**: \`${result.txHash}\`\n${result.simulated ? '\nℹ️ Configure `VITE_SEI_TESTNET_ROUTER` to enable real on-chain swaps.' : ''}`;
+
       return {
         success: true,
-        response: `🔄 **Symphony DEX Swap**\n${result}`
+        response,
+        data: { ...result, expectedOut, quoted: !quote.simulated }
       };
     } catch (error) {
       return {
         success: false,
-        response: `❌ **Swap Failed**: ${error.message}\n\n**💡 Try**: Checking your balance and token addresses`
+        response: `❌ **Swap Failed**: ${error.message}\n\n**💡 Try**: Check wallet connection, token addresses, and router configuration`
       };
     }
   }
