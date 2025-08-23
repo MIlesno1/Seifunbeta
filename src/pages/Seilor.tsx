@@ -18,6 +18,43 @@ import { chatBrain } from '../services/ChatBrain';
 import { actionBrain, IntentType } from '../services/ActionBrain';
 import { privateKeyWallet } from '../services/PrivateKeyWallet';
 import { AIInterface } from '../components/AIInterface';
+import { swapService } from '../services/SwapService';
+import { portfolioService } from '../services/PortfolioService';
+import { langChainSeiAgent } from '../services/LangChainSeiAgent';
+
+const WalletQuickActions = () => {
+  const importPk = () => {
+    const pk = window.prompt('Paste your private key (0x...)');
+    if (!pk) return;
+    try {
+      const addr = privateKeyWallet.importPrivateKey(pk.trim());
+      alert(`Wallet imported: ${addr}`);
+    } catch (e: any) {
+      alert(`Failed to import key: ${e?.message || e}`);
+    }
+  };
+  const importMnemonic = () => {
+    const m = window.prompt('Paste your 12/24-word seed phrase');
+    if (!m) return;
+    try {
+      const addr = privateKeyWallet.importMnemonic(m.trim());
+      alert(`Wallet imported: ${addr}`);
+    } catch (e: any) {
+      alert(`Failed to import seed: ${e?.message || e}`);
+    }
+  };
+  const createWallet = () => {
+    const { address, privateKey, mnemonic } = privateKeyWallet.createNewWallet(true);
+    alert(`New wallet created:\nAddress: ${address}\nPrivateKey: ${privateKey}\nMnemonic: ${mnemonic || ''}`);
+  };
+  return (
+    <div className="flex items-center space-x-2">
+      <button onClick={importPk} className="px-2 py-1 text-[10px] rounded bg-slate-700/50 border border-slate-600/50 text-slate-200 hover:bg-slate-700">Import PK</button>
+      <button onClick={importMnemonic} className="px-2 py-1 text-[10px] rounded bg-slate-700/50 border border-slate-600/50 text-slate-200 hover:bg-slate-700">Import Seed</button>
+      <button onClick={createWallet} className="px-2 py-1 text-[10px] rounded bg-slate-700/50 border border-slate-600/50 text-slate-200 hover:bg-slate-700">Create</button>
+    </div>
+  );
+};
 
 const Seilor = () => {
   const [activePanel, setActivePanel] = useState<'chat' | 'history' | 'transactions' | 'todo' | 'ai-tools'>('chat');
@@ -47,6 +84,7 @@ const Seilor = () => {
     timestamp: Date;
   }>>([]);
   const [walletBalance, setWalletBalance] = useState<{ sei: string; usd: number; usdc: string; usdcUsd: number } | null>(null);
+  const [portfolioUsd, setPortfolioUsd] = useState<number | null>(null);
 
   const { isConnected, address } = useReownWallet();
 
@@ -89,6 +127,10 @@ const Seilor = () => {
         usdc: usdcBalance.balance,
         usdcUsd: usdcBalance.usd
       });
+      if (address) {
+        const pf = await portfolioService.getPortfolio(address, []);
+        setPortfolioUsd(pf.totalUsd);
+      }
     } catch (error) {
       console.error('Failed to load wallet balance:', error);
     }
@@ -288,17 +330,16 @@ const Seilor = () => {
             
             {/* Wallet Status */}
             <div className="flex items-center space-x-4">
+              <div className={`px-2 py-1 rounded-full text-[10px] font-medium ${langChainSeiAgent.isEnabled() ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'}`} title={langChainSeiAgent.isEnabled() ? 'OpenAI enabled' : 'Local NLP mode'}>
+                {langChainSeiAgent.isEnabled() ? 'OpenAI: ON' : 'OpenAI: OFF'}
+              </div>
               {walletBalance && (
                 <div className="text-right">
                   <div className="text-sm font-medium text-white">{walletBalance.sei} SEI | {walletBalance.usdc} USDC</div>
                   <div className="text-xs text-slate-400">${(walletBalance.usd + walletBalance.usdcUsd).toFixed(2)} total</div>
                 </div>
               )}
-              <div className={`px-3 py-1 rounded-full text-xs font-medium ${
-                isConnected ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-              }`}>
-                {isConnected ? 'Connected' : 'Disconnected'}
-              </div>
+              <WalletQuickActions />
             </div>
           </div>
         </div>
@@ -360,14 +401,7 @@ const Seilor = () => {
                     <Menu className="w-4 h-4" />
                     <span className="text-sm">Show Menu</span>
                   </button>
-                  {/* Debug Test Button */}
-                  <button
-                    onClick={testChatFunction}
-                    className="flex items-center space-x-2 px-3 py-2 bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded-lg transition-colors text-sm"
-                    title="Test Chat Function"
-                  >
-                    🧪 Test Chat
-                  </button>
+                  {/* removed debug test button for cleaner UI */}
                 </div>
               )}
               {/* Chat Panel */}
@@ -480,13 +514,7 @@ const Seilor = () => {
                           <Send className="w-5 h-5" />
                         </button>
                       </div>
-                      {/* Debug Test Button */}
-                      <button
-                        onClick={testChatFunction}
-                        className="w-full px-4 py-2 bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 rounded-lg transition-colors text-sm border border-yellow-500/30"
-                      >
-                        🧪 Test Chat Function (Debug)
-                      </button>
+                      {/* removed debug test button for cleaner UI */}
                     </div>
                   </div>
                 </div>
@@ -572,7 +600,30 @@ const Seilor = () => {
                 <div className="p-6">
                   <h2 className="text-xl font-bold text-white mb-4">AI Tools</h2>
                   <p className="text-slate-400 mb-6">Scan tokens, create new tokens, and manage swaps directly from the AI interface.</p>
-                  <AIInterface />
+                  <AIInterface
+                    onSwapRequest={async (fromToken, toToken, amount) => {
+                      try {
+                        // Always use private key wallet
+                        // Normalize simple symbols
+                        const lowerFrom = fromToken.trim().toLowerCase();
+                        const lowerTo = toToken.trim().toLowerCase();
+                        const seiLike = (t: string) => t === 'sei' || t === 'native' || t === ethers?.ZeroAddress;
+                        const usdc = swapService.getUsdcAddress();
+                        let result;
+                        if (seiLike(lowerFrom)) {
+                          const dest = lowerTo === 'usdc' ? usdc : toToken;
+                          result = await swapService.swapSeiToToken(dest, amount, 500);
+                        } else {
+                          const src = lowerFrom === 'usdc' ? usdc : fromToken;
+                          const dest = lowerTo === 'usdc' ? usdc : toToken;
+                          result = await swapService.swapTokenToToken(src, dest, amount, 500);
+                        }
+                        alert(`Swap ${result.simulated ? '(simulated) ' : ''}submitted! Tx: ${result.txHash}`);
+                      } catch (e: any) {
+                        alert(`Swap failed: ${e?.message || e}`);
+                      }
+                    }}
+                  />
                 </div>
               )}
 

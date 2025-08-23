@@ -15,8 +15,21 @@ mongoose.connect(process.env.MONGODB_URI || "mongodb://localhost:27017/seifu", {
   useUnifiedTopology: true,
 });
 
-// Ethers setup for Sei blockchain
-const provider = new ethers.JsonRpcProvider(process.env.SEI_RPC_URL || "https://sei-evm-rpc.publicnode.com");
+// Network configs
+const NETWORKS = {
+  testnet: {
+    rpc: process.env.SEI_RPC_TESTNET || 'https://evm-rpc-testnet.sei-apis.com'
+  },
+  mainnet: {
+    rpc: process.env.SEI_RPC_MAINNET || 'https://evm-rpc.sei-apis.com'
+  }
+};
+
+// Ethers setup for Sei blockchain (default to testnet)
+const defaultChain = (process.env.SEI_DEFAULT_CHAIN || 'testnet').toLowerCase();
+const provider = new ethers.JsonRpcProvider(
+  defaultChain === 'mainnet' ? NETWORKS.mainnet.rpc : NETWORKS.testnet.rpc
+);
 const factoryAbi = require("./abis/TokenCheckerFactory.json");
 const checkerAbi = require("./abis/TokenSafeChecker.json");
 const erc20Abi = require("./abis/ERC20.json");
@@ -27,8 +40,17 @@ const factory = new ethers.Contract(factoryAddress, factoryAbi, provider);
 // Log configuration on startup
 console.log("SeifuGuard Backend Configuration:");
 console.log("- Factory Address:", factoryAddress);
-console.log("- RPC URL:", process.env.SEI_RPC_URL || "https://sei-evm-rpc.publicnode.com");
+console.log("- Default Chain:", defaultChain);
+console.log("- Testnet RPC:", NETWORKS.testnet.rpc);
+console.log("- Mainnet RPC:", NETWORKS.mainnet.rpc);
 console.log("- MongoDB URI:", process.env.MONGODB_URI || "mongodb://localhost:27017/seifu");
+
+// Utility: pick provider by chain param
+function getProviderByChain(chain) {
+  const c = (chain || defaultChain).toLowerCase();
+  const url = c === 'mainnet' ? NETWORKS.mainnet.rpc : NETWORKS.testnet.rpc;
+  return new ethers.JsonRpcProvider(url);
+}
 
 // Token analysis service
 class TokenAnalyzer {
@@ -38,7 +60,7 @@ class TokenAnalyzer {
 
   async analyzeToken(tokenAddress) {
     try {
-      const tokenContract = new ethers.Contract(tokenAddress, erc20Abi, provider);
+      const tokenContract = new ethers.Contract(tokenAddress, erc20Abi, this.provider);
       
       // Get basic token information
       const [name, symbol, decimals, totalSupply] = await Promise.all([
@@ -363,14 +385,12 @@ class TokenAnalyzer {
   }
 }
 
-const tokenAnalyzer = new TokenAnalyzer(provider);
-
 // API Endpoints
 
-// Scan a token for safety
+// Scan a token for safety (chain param optional: mainnet|testnet)
 app.post("/api/scan", async (req, res) => {
   try {
-    const { tokenAddress } = req.body;
+    const { tokenAddress, chain } = req.body;
     
     if (!tokenAddress) {
       return res.status(400).json({ error: "Token address is required" });
@@ -381,8 +401,11 @@ app.post("/api/scan", async (req, res) => {
       return res.status(400).json({ error: "Invalid token address format" });
     }
 
+    const p = getProviderByChain(chain);
+    const analyzer = new TokenAnalyzer(p);
+
     // Perform comprehensive analysis
-    const analysis = await tokenAnalyzer.analyzeToken(tokenAddress);
+    const analysis = await analyzer.analyzeToken(tokenAddress);
     
     // Save to database
     await Token.findOneAndUpdate(
@@ -391,7 +414,8 @@ app.post("/api/scan", async (req, res) => {
         address: tokenAddress,
         analysis: analysis,
         lastScanned: new Date(),
-        scanCount: { $inc: 1 }
+        scanCount: { $inc: 1 },
+        chain: (chain || defaultChain)
       },
       { upsert: true, new: true }
     );
@@ -461,6 +485,71 @@ app.get("/api/stats", async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: "Failed to get statistics" });
   }
+});
+
+// Portfolio endpoint: SEI + list of tokens (query: tokens=addr1,addr2; chain=mainnet|testnet)
+app.get('/api/portfolio/:address', async (req, res) => {
+  try {
+    const address = req.params.address;
+    const chain = req.query.chain;
+    const tokens = (req.query.tokens || '').split(',').filter(Boolean);
+    const p = getProviderByChain(chain);
+
+    const result = { address, chain: chain || defaultChain, sei: '0', tokens: [], totalUsd: 0 };
+    const seiBal = await p.getBalance(address);
+    const sei = parseFloat(ethers.formatEther(seiBal));
+    result.sei = sei.toFixed(4);
+
+    for (const t of tokens) {
+      try {
+        const c = new ethers.Contract(t, erc20Abi, p);
+        const [raw, dec, sym] = await Promise.all([c.balanceOf(address), c.decimals(), c.symbol()]);
+        const bal = parseFloat(ethers.formatUnits(raw, dec));
+        result.tokens.push({ address: t, symbol: sym, balance: bal.toFixed(4) });
+      } catch {}
+    }
+
+    res.json({ success: true, data: result });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to get portfolio', details: e.message });
+  }
+});
+
+// SSE: live wallet transactions (basic)
+app.get('/api/stream/wallet/:address', async (req, res) => {
+  const address = (req.params.address || '').toLowerCase();
+  const chain = (req.query.chain || defaultChain).toLowerCase();
+  const p = getProviderByChain(chain);
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders && res.flushHeaders();
+
+  const send = (event, data) => {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  send('init', { address, chain });
+
+  const onTx = async (tx) => {
+    try {
+      if (!tx || !tx.to) return;
+      const from = (tx.from || '').toLowerCase();
+      const to = (tx.to || '').toLowerCase();
+      if (from === address || to === address) {
+        send('tx', { hash: tx.hash, from, to, value: tx.value?.toString?.() || '0' });
+      }
+    } catch {}
+  };
+
+  p.on('pending', onTx);
+
+  req.on('close', () => {
+    p.off('pending', onTx);
+    res.end();
+  });
 });
 
 // Start server

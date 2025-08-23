@@ -1,281 +1,224 @@
 import { ethers } from 'ethers';
 
-// Private key wallet for seamless AI transactions
-const PRIVATE_KEY = '0x7c5e4b6198276efe786d05f2e3f3ef8f91409066a5de3f1ca58e630c3445c684';
+// Storage keys
+const STORAGE_KEYS = {
+  walletType: 'seilor_wallet_type', // 'pk' | 'mnemonic'
+  privateKey: 'seilor_pk',
+  mnemonic: 'seilor_mnemonic',
+  rpc: 'seilor_rpc_url'
+} as const;
+
+const DEFAULT_RPC = (import.meta as any)?.env?.VITE_SEI_TESTNET_RPC || 'https://evm-rpc-testnet.sei-apis.com';
 
 export class PrivateKeyWallet {
   private provider: ethers.JsonRpcProvider;
-  private wallet: ethers.Wallet;
-  private seiPrice = 0.834; // SEI price in USD
+  private wallet: ethers.Wallet | null = null;
+  private seiPriceUsd = 0.834;
 
   constructor() {
-    this.provider = new ethers.JsonRpcProvider('https://evm-rpc-testnet.sei-apis.com');
-    this.wallet = new ethers.Wallet(PRIVATE_KEY, this.provider);
+    const rpcUrl = this.getStoredRpc() || DEFAULT_RPC;
+    this.provider = new ethers.JsonRpcProvider(rpcUrl);
+    this.initializeWallet();
   }
 
-  // Get wallet address
+  private getStoredRpc(): string | null {
+    try { return localStorage.getItem(STORAGE_KEYS.rpc); } catch { return null; }
+  }
+
+  private setStoredRpc(rpcUrl: string) {
+    try { localStorage.setItem(STORAGE_KEYS.rpc, rpcUrl); } catch {}
+  }
+
+  private initializeWallet() {
+    // Load from storage first
+    const type = this.safeGet(STORAGE_KEYS.walletType);
+    if (type === 'pk') {
+      const pk = this.safeGet(STORAGE_KEYS.privateKey);
+      if (pk) {
+        this.wallet = new ethers.Wallet(pk, this.provider);
+        return;
+      }
+    }
+    if (type === 'mnemonic') {
+      const m = this.safeGet(STORAGE_KEYS.mnemonic);
+      if (m) {
+        this.wallet = ethers.Wallet.fromPhrase(m).connect(this.provider);
+        return;
+      }
+    }
+    // Fallback to env
+    const envPk = (import.meta as any)?.env?.VITE_SEILOR_PK || (typeof process !== 'undefined' ? process.env.PRIVATE_KEY : undefined);
+    if (envPk && /^0x[0-9a-fA-F]{64}$/.test(envPk)) {
+      this.persistPrivateKey(envPk);
+      this.wallet = new ethers.Wallet(envPk, this.provider);
+      return;
+    }
+    // As last resort, create an in-memory random wallet (not persisted)
+    const random = ethers.Wallet.createRandom();
+    this.wallet = random.connect(this.provider);
+  }
+
+  private safeGet(key: string): string | null {
+    try { return localStorage.getItem(key); } catch { return null; }
+  }
+
+  private persistPrivateKey(pk: string) {
+    try {
+      localStorage.setItem(STORAGE_KEYS.walletType, 'pk');
+      localStorage.setItem(STORAGE_KEYS.privateKey, pk);
+    } catch {}
+  }
+
+  private persistMnemonic(mnemonic: string) {
+    try {
+      localStorage.setItem(STORAGE_KEYS.walletType, 'mnemonic');
+      localStorage.setItem(STORAGE_KEYS.mnemonic, mnemonic);
+    } catch {}
+  }
+
+  setRpcUrl(rpcUrl: string) {
+    this.setStoredRpc(rpcUrl);
+    this.provider = new ethers.JsonRpcProvider(rpcUrl);
+    if (this.wallet) {
+      this.wallet = this.wallet.connect(this.provider);
+    }
+  }
+
+  isConnected(): boolean {
+    return !!this.wallet;
+  }
+
   getAddress(): string {
+    if (!this.wallet) throw new Error('Wallet not initialized');
     return this.wallet.address;
   }
 
-  // Get SEI balance
-  async getSeiBalance(): Promise<{ sei: string; usd: number }> {
+  getSigner(): ethers.Wallet {
+    if (!this.wallet) throw new Error('Wallet not initialized');
+    return this.wallet;
+  }
+
+  // Import methods
+  importPrivateKey(pk: string) {
+    if (!/^0x[0-9a-fA-F]{64}$/.test(pk)) throw new Error('Invalid private key');
+    this.persistPrivateKey(pk);
+    this.wallet = new ethers.Wallet(pk, this.provider);
+    return this.getAddress();
+  }
+
+  importMnemonic(mnemonic: string) {
+    const w = ethers.Wallet.fromPhrase(mnemonic).connect(this.provider);
+    this.persistMnemonic(mnemonic);
+    this.wallet = w;
+    return this.getAddress();
+  }
+
+  createNewWallet(persist = true): { address: string; privateKey: string; mnemonic?: string } {
+    const w = ethers.Wallet.createRandom();
+    this.wallet = w.connect(this.provider);
+    if (persist) {
+      this.persistMnemonic(w.mnemonic?.phrase || '');
+      this.persistPrivateKey(w.privateKey);
+    }
+    return { address: w.address, privateKey: w.privateKey, mnemonic: w.mnemonic?.phrase };
+  }
+
+  clearStoredWallet() {
     try {
-      const balance = await this.provider.getBalance(this.wallet.address);
-      const seiBalance = parseFloat(ethers.formatEther(balance));
-      return {
-        sei: seiBalance.toFixed(4),
-        usd: seiBalance * this.seiPrice
-      };
-    } catch (error) {
-      throw new Error(`Failed to get SEI balance: ${error.message}`);
+      localStorage.removeItem(STORAGE_KEYS.walletType);
+      localStorage.removeItem(STORAGE_KEYS.privateKey);
+      localStorage.removeItem(STORAGE_KEYS.mnemonic);
+    } catch {}
+  }
+
+  // Balances
+  async getSeiBalance(): Promise<{ sei: string; usd: number }> {
+    if (!this.wallet) throw new Error('Wallet not initialized');
+    const balance = await this.provider.getBalance(this.wallet.address);
+    const sei = parseFloat(ethers.formatEther(balance));
+    return { sei: sei.toFixed(4), usd: sei * this.seiPriceUsd };
+  }
+
+  async getUSDCBalance(): Promise<{ balance: string; usd: number }> {
+    if (!this.wallet) throw new Error('Wallet not initialized');
+    const USDC = (import.meta as any)?.env?.VITE_SEI_TESTNET_USDC || '0x3894085ef7ff0f0aedf52e2a2704928d1ec074f1';
+    try {
+      const erc20 = new ethers.Contract(USDC, [
+        'function balanceOf(address) view returns (uint256)',
+        'function decimals() view returns (uint8)'
+      ], this.provider);
+      const [bal, dec] = await Promise.all([
+        erc20.balanceOf(this.wallet.address),
+        erc20.decimals()
+      ]);
+      const formatted = parseFloat(ethers.formatUnits(bal, dec));
+      return { balance: formatted.toFixed(2), usd: formatted };
+    } catch {
+      return { balance: '0.00', usd: 0 };
     }
   }
 
-  // Get tokens created by this wallet (from Dev++ storage)
+  async getTokenBalance(tokenAddress: string): Promise<{ balance: string; symbol: string; name: string }>{
+    if (!this.wallet) throw new Error('Wallet not initialized');
+    const erc20 = new ethers.Contract(tokenAddress, [
+      'function balanceOf(address) view returns (uint256)',
+      'function decimals() view returns (uint8)',
+      'function symbol() view returns (string)',
+      'function name() view returns (string)'
+    ], this.provider);
+    const [bal, dec, sym, name] = await Promise.all([
+      erc20.balanceOf(this.wallet.address),
+      erc20.decimals(),
+      erc20.symbol(),
+      erc20.name()
+    ]);
+    return { balance: parseFloat(ethers.formatUnits(bal, dec)).toFixed(4), symbol: sym, name };
+  }
+
+  // Token ops
+  async transferTokens(tokenAddress: string, to: string, amount: string) {
+    if (!this.wallet) throw new Error('Wallet not initialized');
+    const erc20 = new ethers.Contract(tokenAddress, [
+      'function transfer(address to, uint256 amount) returns (bool)',
+      'function decimals() view returns (uint8)'
+    ], this.wallet);
+    const dec = await erc20.decimals();
+    const amt = ethers.parseUnits(amount, dec);
+    const tx = await erc20.transfer(to, amt);
+    await tx.wait();
+    return { success: true, txHash: tx.hash };
+  }
+
+  async sendSei(to: string, amount: string) {
+    if (!this.wallet) throw new Error('Wallet not initialized');
+    const tx = await this.wallet.sendTransaction({ to, value: ethers.parseEther(amount) });
+    await tx.wait();
+    return { success: true, txHash: tx.hash };
+  }
+
+  // Token registry helpers (unchanged behavior)
   getMyTokens(): Array<{ address: string; name: string; symbol: string; supply: string; creator: string }> {
     try {
-      const savedTokens = localStorage.getItem('dev++_tokens');
-      if (savedTokens) {
-        const tokens = JSON.parse(savedTokens);
-        // Filter tokens created by this wallet address
-        return tokens.filter((token: any) => 
-          token.creator && token.creator.toLowerCase() === this.wallet.address.toLowerCase()
-        );
-      }
-      return [];
-    } catch (error) {
-      console.error('Failed to get my tokens:', error);
+      const saved = localStorage.getItem('dev++_tokens');
+      if (!saved) return [];
+      const tokens = JSON.parse(saved);
+      if (!this.wallet) return [];
+      return tokens.filter((t: any) => t.creator && t.creator.toLowerCase() === this.wallet!.address.toLowerCase());
+    } catch {
       return [];
     }
   }
 
-  // Check if I own/created this token
   async isMyToken(tokenAddress: string): Promise<boolean> {
+    if (!this.wallet) return false;
     try {
-      // Check if token is in my created tokens list
-      const myTokens = this.getMyTokens();
-      const isInMyList = myTokens.some(token => 
-        token.address.toLowerCase() === tokenAddress.toLowerCase()
-      );
-      
-      if (isInMyList) return true;
-
-      // Also check if I'm the owner of the contract (for tokens with owner function)
-      try {
-        const tokenContract = new ethers.Contract(tokenAddress, [
-          'function owner() view returns (address)'
-        ], this.provider);
-        
-        const owner = await tokenContract.owner();
-        return owner.toLowerCase() === this.wallet.address.toLowerCase();
-      } catch {
-        // Token might not have owner function, that's ok
-        return false;
-      }
-    } catch (error) {
-      console.error('Failed to check token ownership:', error);
-      return false;
-    }
-  }
-
-  // Get USDC balance specifically
-  async getUSDCBalance(): Promise<{ balance: string; usd: number }> {
-    try {
-      // Common USDC addresses on Sei (you can add more)
-      const USDC_ADDRESSES = [
-        '0x3894085ef7ff0f0aedf52e2a2704928d1ec074f1', // Test USDC
-        '0xA0b86a33E6441E47d6D5B4681e8A3F1bF4C3A1C8', // Another potential USDC
-      ];
-      
-      for (const usdcAddress of USDC_ADDRESSES) {
-        try {
-          const tokenContract = new ethers.Contract(usdcAddress, [
-            'function balanceOf(address) view returns (uint256)',
-            'function decimals() view returns (uint8)',
-            'function symbol() view returns (string)'
-          ], this.provider);
-
-          const [balance, decimals, symbol] = await Promise.all([
-            tokenContract.balanceOf(this.wallet.address),
-            tokenContract.decimals(),
-            tokenContract.symbol()
-          ]);
-
-          if (symbol.toLowerCase().includes('usdc')) {
-            const formattedBalance = ethers.formatUnits(balance, decimals);
-            const balanceNum = parseFloat(formattedBalance);
-            
-            return {
-              balance: balanceNum.toFixed(2),
-              usd: balanceNum // USDC is 1:1 with USD
-            };
-          }
-        } catch (error) {
-          // Try next address
-          continue;
-        }
-      }
-      
-      // No USDC found
-      return { balance: '0.00', usd: 0 };
-    } catch (error) {
-      console.error('Failed to get USDC balance:', error);
-      return { balance: '0.00', usd: 0 };
-    }
-  }
-
-  // Get token balance
-  async getTokenBalance(tokenAddress: string): Promise<{ balance: string; symbol: string; name: string }> {
-    try {
-      const tokenContract = new ethers.Contract(tokenAddress, [
-        'function balanceOf(address) view returns (uint256)',
-        'function decimals() view returns (uint8)',
-        'function symbol() view returns (string)',
-        'function name() view returns (string)'
-      ], this.provider);
-
-      const [balance, decimals, symbol, name] = await Promise.all([
-        tokenContract.balanceOf(this.wallet.address),
-        tokenContract.decimals(),
-        tokenContract.symbol(),
-        tokenContract.name()
-      ]);
-
-      const formattedBalance = ethers.formatUnits(balance, decimals);
-      
-      return {
-        balance: parseFloat(formattedBalance).toFixed(4),
-        symbol,
-        name
-      };
-    } catch (error) {
-      throw new Error(`Failed to get token balance: ${error.message}`);
-    }
-  }
-
-  // Add liquidity (simplified for testing)
-  async addLiquidity(tokenAddress: string, tokenAmount: string, seiAmount: string) {
-    try {
-      // First approve token spending
-      const tokenContract = new ethers.Contract(tokenAddress, [
-        'function approve(address spender, uint256 amount) returns (bool)',
-        'function decimals() view returns (uint8)'
-      ], this.wallet);
-
-      const decimals = await tokenContract.decimals();
-      const tokenAmountWei = ethers.parseUnits(tokenAmount, decimals);
-
-      const approveTx = await tokenContract.approve(this.wallet.address, tokenAmountWei);
-      await approveTx.wait();
-
-      // For testing, we'll create a mock liquidity transaction
-      const liquidityTx = await this.wallet.sendTransaction({
-        to: tokenAddress,
-        value: ethers.parseEther(seiAmount),
-        gasLimit: 100000
-      });
-
-      await liquidityTx.wait();
-
-      return {
-        success: true,
-        txHash: liquidityTx.hash,
-        tokenAmount,
-        seiAmount
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: error.message
-      };
-    }
-  }
-
-  // Burn tokens
-  async burnTokens(tokenAddress: string, amount: string) {
-    try {
-      const tokenContract = new ethers.Contract(tokenAddress, [
-        'function burn(uint256 amount) returns (bool)',
-        'function decimals() view returns (uint8)',
-        'function totalSupply() view returns (uint256)'
-      ], this.wallet);
-
-      const decimals = await tokenContract.decimals();
-      const burnAmount = ethers.parseUnits(amount, decimals);
-
-      const burnTx = await tokenContract.burn(burnAmount);
-      await burnTx.wait();
-
-      const newTotalSupply = await tokenContract.totalSupply();
-      const formattedSupply = ethers.formatUnits(newTotalSupply, decimals);
-
-      return {
-        success: true,
-        txHash: burnTx.hash,
-        amountBurned: amount,
-        newTotalSupply: parseFloat(formattedSupply).toFixed(0)
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: error.message
-      };
-    }
-  }
-
-  // Transfer tokens
-  async transferTokens(tokenAddress: string, toAddress: string, amount: string) {
-    try {
-      const tokenContract = new ethers.Contract(tokenAddress, [
-        'function transfer(address to, uint256 amount) returns (bool)',
-        'function decimals() view returns (uint8)'
-      ], this.wallet);
-
-      const decimals = await tokenContract.decimals();
-      const transferAmount = ethers.parseUnits(amount, decimals);
-
-      const transferTx = await tokenContract.transfer(toAddress, transferAmount);
-      await transferTx.wait();
-
-      return {
-        success: true,
-        txHash: transferTx.hash,
-        amount,
-        to: toAddress
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: error.message
-      };
-    }
-  }
-
-  // Send SEI
-  async sendSei(toAddress: string, amount: string) {
-    try {
-      const tx = await this.wallet.sendTransaction({
-        to: toAddress,
-        value: ethers.parseEther(amount)
-      });
-
-      await tx.wait();
-
-      return {
-        success: true,
-        txHash: tx.hash,
-        amount,
-        to: toAddress
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: error.message
-      };
-    }
+      const myList = this.getMyTokens();
+      if (myList.some(t => t.address.toLowerCase() === tokenAddress.toLowerCase())) return true;
+      const token = new ethers.Contract(tokenAddress, ['function owner() view returns (address)'], this.provider);
+      const owner = await token.owner().catch(() => '0x');
+      return owner.toLowerCase() === this.wallet.address.toLowerCase();
+    } catch { return false; }
   }
 }
 
-// Export singleton instance
 export const privateKeyWallet = new PrivateKeyWallet();

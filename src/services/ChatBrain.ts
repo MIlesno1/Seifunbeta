@@ -10,12 +10,14 @@ interface ConversationContext {
     preferredTokens?: string[];
     riskTolerance?: 'low' | 'medium' | 'high';
     tradingStyle?: 'conservative' | 'moderate' | 'aggressive';
+    preferredChain?: 'testnet' | 'mainnet';
   };
   sessionData?: {
     startTime: Date;
     messageCount: number;
     successfulActions: number;
     failedActions: number;
+    pendingChainAsk?: string;
   };
   // Transfer confirmation context
   pendingTransfer?: {
@@ -65,6 +67,17 @@ export class ChatBrain {
     try {
       // Update session stats
       this.context.sessionData!.messageCount++;
+      
+      // Chain selection resolution
+      const nm = userMessage.toLowerCase().trim();
+      if (this.context.sessionData?.pendingChainAsk && (nm === 'testnet' || nm === 'mainnet')) {
+        // Store preference and replay previous message with explicit chain hint
+        if (!this.context.userPreferences) this.context.userPreferences = {} as any;
+        this.context.userPreferences.preferredChain = nm as any;
+        const replay = `${this.context.sessionData.pendingChainAsk} on ${nm}`;
+        this.context.sessionData.pendingChainAsk = undefined;
+        return await this.processMessage(replay);
+      }
       
       // Add user message to history
       const userChatMessage: ChatMessage = {
@@ -120,6 +133,21 @@ export class ChatBrain {
       
       // Intent Recognition through Action Brain
       const intentResult = await actionBrain.recognizeIntent(userMessage);
+      
+      // Chain follow-up: ask once if chain not specified for swap/scan
+      const requiresChain = intentResult.intent === IntentType.SYMPHONY_SWAP || intentResult.intent === IntentType.TOKEN_SCAN;
+      const chainMentioned = /\btestnet\b|\bmainnet\b/i.test(userMessage);
+      const hasPreference = !!this.context.userPreferences?.preferredChain;
+      if (requiresChain && !chainMentioned && !hasPreference) {
+        this.context.sessionData!.pendingChainAsk = userMessage;
+        return {
+          message: `🌐 Which chain should I use? **Sei Testnet** or **Sei Mainnet**?\n\nReply with "testnet" or "mainnet". I’ll remember your choice for this session.`,
+          success: false,
+          intent: intentResult.intent,
+          confidence: intentResult.confidence,
+          suggestions: ['testnet', 'mainnet']
+        };
+      }
       
       // Context Enhancement
       const enhancedIntent = this.enhanceWithContext(intentResult);
